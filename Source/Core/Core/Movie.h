@@ -188,6 +188,12 @@ public:
   void SetClearSave(bool enabled);
   void SignalDiscChange(const std::string& new_path);
   void SetReset(bool reset);
+  void SetWatch(u32 address, u32 size, u32 value);
+  void AddSplice(u32 match, std::vector<u8> polls);
+  void SetDumpFrame(u64 frame);
+  void SetDumpAfterWatch(u32 match);
+  void SetStopFrame(u64 frame);
+  void SetStopAfterSplices(bool stop);
 
   bool IsConfigSaved() const;
   bool IsStartingFromClearSave() const;
@@ -225,7 +231,17 @@ public:
   std::string GetRerecords() const;
 
 private:
+  struct Splice
+  {
+    u32 match;
+    std::vector<u8> polls;
+    std::optional<u64> start;
+  };
+
   void GetSettings();
+  void RequestStop();
+  void CheckWatch(u64 poll);
+  void ApplySplices(u64 poll);
   void CheckInputEnd();
 
   void CheckMD5();
@@ -241,6 +257,17 @@ private:
   DTMHeader m_temp_header{};
   std::vector<u8> m_temp_input;
   u64 m_current_byte = 0;
+  u32 m_watch_address = 0;
+  u32 m_watch_size = 0;
+  u32 m_watch_value = 0;
+  u32 m_watch_matches = 0;
+  bool m_watch_held = false;
+  std::vector<Splice> m_splices;
+  u32 m_dump_after_watch = 0;
+  u64 m_dump_frame = 0;
+  u64 m_stop_frame = 0;
+  bool m_stop_after_splices = false;
+  bool m_stopping = false;
   u64 m_current_frame = 0;
   u64 m_total_frames = 0;  // VI
   u64 m_current_lag_count = 0;

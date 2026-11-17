@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <cstring>
 #include <iterator>
 #include <mbedtls/md.h>
@@ -41,12 +42,14 @@
 #include "Core/ConfigManager.h"
 #include "Core/Core.h"
 #include "Core/CoreTiming.h"
+#include "Core/Host.h"
 #include "Core/DSP/DSPCore.h"
 #include "Core/HW/CPU.h"
 #include "Core/HW/DVD/DVDInterface.h"
 #include "Core/HW/EXI/EXI.h"
 #include "Core/HW/EXI/EXI_DeviceIPL.h"
 #include "Core/HW/EXI/EXI_DeviceMemoryCard.h"
+#include "Core/HW/Memmap.h"
 #include "Core/HW/ProcessorInterface.h"
 #include "Core/HW/SI/SI.h"
 #include "Core/HW/SI/SI_Device.h"
@@ -183,7 +186,102 @@ void MovieManager::FrameUpdate()
     m_total_lag_count = m_current_lag_count;
   }
 
+  if (m_dump_frame && m_current_frame == m_dump_frame)
+  {
+    Config::SetCurrent(Config::MAIN_MOVIE_DUMP_FRAMES, true);
+    Config::SetCurrent(Config::MAIN_DUMP_AUDIO, true);
+  }
+  if (m_stop_frame && m_current_frame >= m_stop_frame)
+    RequestStop();
+
   m_polled = false;
+}
+
+void MovieManager::SetWatch(u32 address, u32 size, u32 value)
+{
+  m_watch_address = address & 0x1ffffff;
+  m_watch_size = size;
+  m_watch_value = value;
+}
+
+void MovieManager::AddSplice(u32 match, std::vector<u8> polls)
+{
+  m_splices.push_back({match, std::move(polls), std::nullopt});
+}
+
+void MovieManager::SetDumpFrame(u64 frame)
+{
+  m_dump_frame = frame;
+}
+
+void MovieManager::SetDumpAfterWatch(u32 match)
+{
+  m_dump_after_watch = match;
+}
+
+void MovieManager::SetStopFrame(u64 frame)
+{
+  m_stop_frame = frame;
+}
+
+void MovieManager::SetStopAfterSplices(bool stop)
+{
+  m_stop_after_splices = stop;
+}
+
+void MovieManager::RequestStop()
+{
+  if (m_stopping)
+    return;
+  m_stopping = true;
+  Host_Message(HostMessageID::WMUserStop);
+}
+
+void MovieManager::CheckWatch(u64 poll)
+{
+  if (!m_watch_size)
+    return;
+  auto& memory = m_system.GetMemory();
+  const u32 value = m_watch_size == 1 ? memory.Read_U8(m_watch_address) :
+                    m_watch_size == 2 ? memory.Read_U16(m_watch_address) :
+                                        memory.Read_U32(m_watch_address);
+  const bool held = value == m_watch_value;
+  if (held && !m_watch_held)
+  {
+    m_watch_matches++;
+    std::printf("watch %llu %llu\n", static_cast<unsigned long long>(poll),
+                static_cast<unsigned long long>(m_current_frame));
+    for (auto& splice : m_splices)
+    {
+      if (splice.match == m_watch_matches)
+        splice.start = poll;
+    }
+    if (m_dump_after_watch == m_watch_matches)
+    {
+      m_dump_frame = m_current_frame + 1;
+      std::printf("dump %llu\n", static_cast<unsigned long long>(m_dump_frame));
+    }
+    std::fflush(stdout);
+  }
+  m_watch_held = held;
+}
+
+void MovieManager::ApplySplices(u64 poll)
+{
+  bool finished = !m_splices.empty();
+  for (const auto& splice : m_splices)
+  {
+    const u64 count = splice.polls.size() / sizeof(ControllerState);
+    if (!splice.start || poll + 1 < *splice.start + count)
+      finished = false;
+    if (splice.start && poll >= *splice.start && poll < *splice.start + count)
+    {
+      std::memcpy(&m_pad_state, &splice.polls[(poll - *splice.start) * sizeof(ControllerState)],
+                  sizeof(ControllerState));
+    }
+  }
+  if (finished && m_stop_after_splices)
+    RequestStop();
 }
 
 // called when game is booting up, even if no movie is active,
@@ -1132,7 +1230,10 @@ void MovieManager::PlayController(GCPadStatus* PadStatus, int controllerID)
     return;
   }
 
+  const u64 poll = m_current_byte / sizeof(ControllerState);
+  CheckWatch(poll);
   memcpy(&m_pad_state, &m_temp_input[m_current_byte], sizeof(ControllerState));
+  ApplySplices(poll);
   m_current_byte += sizeof(ControllerState);
 
   PadStatus->isConnected = m_pad_state.is_connected;

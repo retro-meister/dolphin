@@ -6,6 +6,8 @@
 #include <OptionParser.h>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -15,12 +17,14 @@
 #include <windows.h>
 #endif
 
+#include "Common/FileUtil.h"
 #include "Common/ScopeGuard.h"
 #include "Core/Boot/Boot.h"
 #include "Core/BootManager.h"
 #include "Core/Core.h"
 #include "Core/DolphinAnalytics.h"
 #include "Core/Host.h"
+#include "Core/Movie.h"
 #include "Core/System.h"
 
 #include "UICommon/CommandLineParse.h"
@@ -188,6 +192,22 @@ int main(const int argc, char* argv[])
 {
   const auto parser =
       CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
+  parser->add_option("--watch")
+      .action("store")
+      .help("Print each movie input poll where hex ADDRESS:SIZE=VALUE starts to hold");
+  parser->add_option("--splice")
+      .action("append")
+      .help("N:FILE: after the Nth watch match, take movie inputs from FILE");
+  parser->add_option("--dump-from-frame")
+      .action("store")
+      .help("Start dumping frames after this many emulated frames");
+  parser->add_option("--dump-after-watch")
+      .action("store")
+      .help("Start dumping frames after the Nth watch match");
+  parser->add_option("--stop-frame").action("store").help("Stop after this many emulated frames");
+  parser->add_option("--stop-after-splices")
+      .action("store_true")
+      .help("Stop once every splice has been played");
   parser->add_option("-p", "--platform")
       .action("store")
       .help("Window platform to use [%choices]")
@@ -302,6 +322,55 @@ int main(const int argc, char* argv[])
 #endif
 
   DolphinAnalytics::Instance().ReportDolphinStart("nogui");
+
+  auto& movie = Core::System::GetInstance().GetMovie();
+  if (options.is_set("watch"))
+  {
+    unsigned address = 0, size = 0, value = 0;
+    const std::string watch = static_cast<const char*>(options.get("watch"));
+    if (std::sscanf(watch.c_str(), "%x:%u=%u", &address, &size, &value) != 3 ||
+        (size != 1 && size != 2 && size != 4))
+    {
+      fprintf(stderr, "--watch needs ADDRESS:SIZE=VALUE with SIZE 1, 2 or 4\n");
+      return 1;
+    }
+    movie.SetWatch(address, size, value);
+  }
+  for (const std::string& splice : options.all("splice"))
+  {
+    const size_t colon = splice.find(':');
+    std::string data;
+    if (colon == std::string::npos ||
+        !File::ReadFileToString(splice.substr(colon + 1), data) || data.size() % 8 != 0)
+    {
+      fprintf(stderr, "--splice needs N:FILE with a whole number of 8-byte inputs\n");
+      return 1;
+    }
+    movie.AddSplice(static_cast<u32>(std::strtoul(splice.c_str(), nullptr, 10)),
+                    std::vector<u8>(data.begin(), data.end()));
+  }
+  if (options.is_set("dump_from_frame"))
+    movie.SetDumpFrame(std::strtoull(static_cast<const char*>(options.get("dump_from_frame")), nullptr, 10));
+  if (options.is_set("dump_after_watch"))
+    movie.SetDumpAfterWatch(
+        static_cast<u32>(std::strtoul(static_cast<const char*>(options.get("dump_after_watch")), nullptr, 10)));
+  if (options.is_set("stop_frame"))
+    movie.SetStopFrame(std::strtoull(static_cast<const char*>(options.get("stop_frame")), nullptr, 10));
+  movie.SetStopAfterSplices(options.is_set("stop_after_splices"));
+  if (options.is_set("movie"))
+  {
+    std::optional<std::string> movie_state;
+    if (!movie.PlayInput(static_cast<const char*>(options.get("movie")), &movie_state))
+    {
+      fprintf(stderr, "Could not play the movie\n");
+      return 1;
+    }
+    if (movie_state)
+    {
+      fprintf(stderr, "Movies starting from a save state are not supported\n");
+      return 1;
+    }
+  }
 
   if (!BootManager::BootCore(Core::System::GetInstance(), std::move(boot), wsi))
   {
