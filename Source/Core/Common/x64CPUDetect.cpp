@@ -19,6 +19,7 @@
 #include "Common/CommonTypes.h"
 #include "Common/StringUtil.h"
 #ifdef _WIN32
+#include "Common/Logging/Log.h"
 #include "Common/MsgHandler.h"
 #endif
 
@@ -82,8 +83,8 @@ static void WarnIfRunningUnderEmulation()
 
   // The process is not native; could use IsWow64Process2 to get native machine type, but for now
   // we can assume it is arm64.
-  PanicAlertFmtT("This build of Dolphin is not natively compiled for your CPU.\n"
-                 "Please run the ARM64 build of Dolphin for a better experience.");
+  WARN_LOG_FMT(COMMON, "This build of Dolphin is not natively compiled for your CPU. "
+                       "Please run the ARM64 build of Dolphin for a better experience.");
 }
 
 #endif  // ifdef _WIN32
